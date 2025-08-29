@@ -4,9 +4,6 @@ Created on Fri Aug 29 13:16:18 2025
 
 @author: fayem
 """
-
-
-
 import numpy as np
 from scipy.stats import iqr
 
@@ -23,6 +20,7 @@ np.random.seed(0)
 data = np.random.normal(0, 1, 100)
 h_silverman = silverman_bandwidth(data)
 print(f"Bande passante de Silverman : h = {h_silverman:.3f}")
+
 
 
 
