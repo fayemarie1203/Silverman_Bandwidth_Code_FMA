@@ -1,62 +1,154 @@
+
 import numpy as np
 import matplotlib.pyplot as plt
 
-# -------------------------------
-# 1) Données : Laplace(0, b) avec variance 1  =>  b = 1/sqrt(2)
-# -------------------------------
+# Reproducibilité
+rng = np.random.default_rng(7)
+
+# --- Données : échantillon simulé (Laplace(0,1)) ---
 n = 100
-b = 1 / np.sqrt(2.0)  # échelle Laplace pour Var=1
-rng = np.random.default_rng(42)
-x = rng.laplace(loc=0.0, scale=b, size=n)
+X = rng.laplace(loc=0.0, scale=1.0, size=n)
 
-# -------------------------------
-# 2) Règle de Silverman
-#    h = 0.9 * min(sigma_hat, IQR/1.34) * n^{-1/5}
-# -------------------------------
-sigma_hat = np.std(x, ddof=1)
-q1, q3 = np.quantile(x, [0.25, 0.75])
-iqr = q3 - q1
-h_sil = 0.9 * min(sigma_hat, iqr / 1.34) * n ** (-1/5)
+# --- Règle de Silverman ---
+def iqr(x):
+    q75, q25 = np.percentile(x, [75, 25])
+    return q75 - q25
 
-print(f"Silverman bandwidth h = {h_sil:.4f}")
+sigma_hat = np.std(X, ddof=1)
+iqr_hat   = iqr(X)
+h_sil     = 0.9 * min(sigma_hat, iqr_hat / 1.34) * (n ** (-1/5))
 
-# -------------------------------
-# 3) Estimateur à noyau gaussien
-#    \hat p_h(t) = (1/(n h)) * sum_i phi((t - x_i)/h), phi = N(0,1)
-# -------------------------------
-def gaussian_kernel(u):
-    return np.exp(-0.5 * u**2) / np.sqrt(2 * np.pi)
+# --- Noyaux ---
+def K_gauss(u):
+    return (1.0 / np.sqrt(2.0 * np.pi)) * np.exp(-0.5 * u * u)
 
-# grille pour évaluation
-x_grid = np.linspace(-5, 5, 1000)
+def K_uniform(u):
+    return 0.5 * ((np.abs(u) <= 1).astype(float))
 
-# KDE "maison"
-diff = (x_grid[:, None] - x[None, :]) / h_sil  # shape (len(grid), n)
-k_vals = gaussian_kernel(diff)
-p_hat = k_vals.mean(axis=1) / h_sil  # (1/(n h)) * sum phi
+def K_tri(u):
+    a = 1.0 - np.abs(u)
+    a[a < 0] = 0.0
+    return a
 
-# -------------------------------
-# 4) Densité vraie Laplace(0,b) pour comparaison
-#    f(t) = (1/(2b)) * exp(-|t|/b)
-# -------------------------------
-f_true = np.exp(-np.abs(x_grid) / b) / (2 * b)
+def K_epan(u):
+    mask = (np.abs(u) <= 1)
+    res = np.zeros_like(u, dtype=float)
+    res[mask] = 0.75 * (1 - u[mask]**2)
+    return res
 
-# -------------------------------
-# 5) Figure
-# -------------------------------
-# -------------------------------
+def K_biweight(u):
+    mask = (np.abs(u) <= 1)
+    res = np.zeros_like(u, dtype=float)
+    res[mask] = (15.0/16.0) * (1 - u[mask]**2)**2
+    return res
 
-plt.figure(figsize=(7.2, 4.8))
-plt.hist(x, bins=20, density=True, alpha=0.25, label="Histogramme (dens.)")
-plt.plot(x_grid, p_hat, lw=2, label=r"Estimation noyau (gaussien, $h_{\rm Sil}$)")
-plt.plot(x_grid, f_true, lw=2, ls="--", label="Densité Laplace vraie")
-plt.xlabel("x"); plt.ylabel("Densité")
-plt.title("KDE gaussien avec bande passante de Silverman (échantillon Laplace)")
-plt.legend()
-plt.tight_layout()
-plt.savefig("estimation-dens-hsil.png", dpi=200)  # image enregistrée pour LaTeX
-plt.show()   # <-- afficher à l'écran
-# plt.close()
+def K_silverman(u):
+    # Noyau de Silverman (ordre 4), oscillant
+    return 0.5 * np.exp(-np.abs(u)/np.sqrt(2)) * np.sin(np.abs(u)/np.sqrt(2) + np.pi/4)
+
+kernels = {
+    "Gaussien": K_gauss,
+    "Épanechnikov": K_epan,
+    "Triangulaire": K_tri,
+    "Uniforme": K_uniform,
+    "Biweight": K_biweight,
+    "Silverman": K_silverman,
+}
+
+# --- Estimateur à noyau ---
+def kde(x_grid, data, h, K):
+    u = (x_grid[:, None] - data[None, :]) / h
+    return (K(u).sum(axis=1)) / (len(data) * h)
+
+# Grille de tracé
+x_min = np.quantile(X, 0.01) - 3*h_sil
+x_max = np.quantile(X, 0.99) + 3*h_sil
+x_grid = np.linspace(x_min, x_max, 1200)
+
+# Estimations avec le même h_sil
+estimates = {name: kde(x_grid, X, h_sil, K) for name, K in kernels.items()}
+
+# Densité vraie Laplace(0,1) pour repère (optionnel)
+def laplace_pdf(x, loc=0.0, scale=1.0):
+    return 0.5/scale * np.exp(-np.abs(x-loc)/scale)
+true_pdf = laplace_pdf(x_grid, 0.0, 1.0)
+
+# Tracé (AUCUN histogramme)
+fig, ax = plt.subplots(figsize=(7, 4.5))
+for name, y in estimates.items():
+    ax.plot(x_grid, y, label=name, linewidth=2)
+ax.plot(x_grid, true_pdf, linestyle="--", linewidth=2, label="Densité vraie (Laplace)", alpha=0.9)
+
+ax.set_xlabel("x")
+ax.set_ylabel("densité estimée")
+ax.set_title(f"Règle de Silverman (n={n}) — h_sil ≈ {h_sil:.4f}")
+ax.legend(loc="best")
+ax.grid(True, alpha=0.3)
+fig.tight_layout()
+fig.savefig("silverman_multi_kernels.png", dpi=160)
+
+print("h_sil ≈", h_sil)
+
+
+import matplotlib.patheffects as pe  # <-- pour le contour blanc (optionnel)
+
+# --- palette + styles bien contrastés ---
+colors = {
+    "Gaussien":        "#1f77b4",  # bleu
+    "Épanechnikov":    "#ff7f0e",  # orange
+    "Triangulaire":    "#2ca02c",  # vert
+    "Uniforme":        "#d62728",  # rouge
+    "Biweight":        "#9467bd",  # violet
+    "Silverman":       "#8c564b",  # marron
+}
+styles = {
+    "Gaussien":        "-",
+    "Épanechnikov":    "--",
+    "Triangulaire":    "-.",
+    "Uniforme":        ":",
+    "Biweight":        "-",
+    "Silverman":       "--",
+}
+
+# --- TRACÉ (remplace ton bloc fig, ax = plt.subplots(...) jusqu’au savefig) ---
+fig, ax = plt.subplots(figsize=(7.5, 4.8))
+ax.set_facecolor("white")
+
+# lignes plus épaisses + léger contour blanc pour bien voir
+effect = [pe.Stroke(linewidth=3.4, foreground="white"), pe.Normal()]
+
+for k, y in estimates.items():
+    ax.plot(
+        x_grid, y,
+        label=k,
+        color=colors[k],
+        linestyle=styles[k],
+        linewidth=2.4,
+        alpha=0.95,
+        zorder=3,
+        path_effects=effect,   # retire cette ligne si tu ne veux pas de contour
+    )
+
+# densité vraie en noir pointillé, au-dessus
+ax.plot(
+    x_grid, true_pdf,
+    linestyle="--",
+    linewidth=2.6,
+    color="black",
+    alpha=0.9,
+    label="Densité vraie (Laplace)",
+    zorder=4,
+    path_effects=effect,       # idem : optionnel
+)
+
+ax.set_xlabel("x")
+ax.set_ylabel("densité estimée")
+ax.set_title(f"Règle de Silverman (n={n}) — h_sil ≈ {h_sil:.4f}")
+ax.grid(True, alpha=0.25)
+leg = ax.legend(loc="best", frameon=True, framealpha=0.9, ncol=1)
+fig.tight_layout()
+fig.savefig("silverman_multi_kernels.png", dpi=180)
+
 
 
 
